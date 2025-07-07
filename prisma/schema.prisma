@@ -1,0 +1,310 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum DrawStatus {
+  NOT_STARTED
+  SALE_OPEN
+  SALE_CLOSED
+  DRAWING
+  COMPLETED
+  CANCELED
+}
+
+enum ProposalStatus {
+  PENDING
+  ACTIVE
+  QUEUED
+  EXECUTED
+  CANCELED
+  DEFEATED
+  EXPIRED
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model User {
+  id               String    @id @default(uuid())
+  address          String    @unique(map: "user_address_unique") @db.VarChar(42)
+  name             String?
+  email            String?   @unique
+  emailVerified    DateTime?
+  image            String?
+  isAdmin          Boolean   @default(false)
+  lastLogin        DateTime?
+  nonce            String?   @db.Char(32) // 16-byte nonce in hex
+  twoFactorEnabled Boolean   @default(false)
+  twoFactorSecret  String?
+  lastNonceUpdate  DateTime?
+
+  // Lottery relationships
+  tickets       Ticket[]
+  goldenTickets Ticket[]      @relation("GoldenTickets")
+  silverTickets Ticket[]      @relation("SilverTickets")
+  wins          LotteryDraw[]
+  refundClaims  RefundClaim[]
+
+  // Governance relationships
+  proposals Proposal[]
+  votes     Vote[]
+
+  // Loyalty tracking (cached from blockchain)
+  totalTickets    Int       @default(0)
+  lossStreak      Int       @default(0)
+  loyaltyTier     Int       @default(0)
+  lastWin         DateTime?
+  lastSyncedBlock BigInt?   @default(0) // Last block number when data was synced
+
+  // Authentication relationships
+  accounts      Account[]
+  sessions      Session[]
+  activityLogs  ActivityLog[]
+  AdminActivity AdminActivity[]
+
+  @@index([address])
+  @@index([loyaltyTier])
+  @@index([lastSyncedBlock])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model LotteryDraw {
+  id             String     @id @default(uuid())
+  drawId         Int        @unique
+  startTime      DateTime
+  endTime        DateTime
+  status         DrawStatus @default(NOT_STARTED)
+  ticketPrice    Float
+  prizePool      Float
+  winningNumbers Int[]
+
+  // Relationships
+  tickets  Ticket[]
+  winner   User?    @relation(fields: [winnerId], references: [id])
+  winnerId String?
+
+  // VRF data
+  vrfRequestId String?
+  vrfFulfilled Boolean @default(false)
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([drawId])
+  @@index([status])
+  @@index([endTime])
+  @@index([createdAt])
+}
+
+model Ticket {
+  id        String      @id @default(uuid())
+  tokenId   Int         @unique
+  drawId    Int
+  lottery   LotteryDraw @relation(fields: [lotteryId], references: [id])
+  lotteryId String
+  owner     User        @relation(fields: [ownerId], references: [id])
+  ownerId   String
+  isGolden  Boolean     @default(false)
+  isSilver  Boolean     @default(false)
+  claimed   Boolean     @default(false)
+  mintedAt  DateTime    @default(now())
+
+  // Traits (on-chain mirror)
+  rarity            Int     @default(0) // 0 = normal, 1 = golden, 2 = silver
+  drawNumber        Int
+  metadataUrl       String? // IPFS URI for NFT metadata
+  goldenTicketUsers User[]  @relation("GoldenTickets")
+  silverTicketUsers User[]  @relation("SilverTickets")
+
+  @@index([tokenId])
+  @@index([ownerId])
+  @@index([drawId])
+  @@index([isGolden])
+  @@index([isSilver])
+  @@index([mintedAt])
+}
+
+model Proposal {
+  id           String         @id @default(uuid())
+  proposalId   Int            @unique
+  title        String
+  description  String
+  status       ProposalStatus @default(PENDING)
+  votesFor     Int            @default(0)
+  votesAgainst Int            @default(0)
+  abstainVotes Int            @default(0)
+  startTime    DateTime
+  endTime      DateTime
+  executionETA DateTime?
+
+  // Relationships
+  creator   User   @relation(fields: [creatorId], references: [id])
+  creatorId String
+  votes     Vote[]
+
+  // Targets and calldata
+  targets   String[] // JSON array of addresses
+  values    String[] // JSON array of ether values (strings for big numbers)
+  calldatas String[] // JSON array of calldatas
+
+  @@index([proposalId])
+  @@index([status])
+  @@index([endTime])
+  @@index([startTime])
+}
+
+model Vote {
+  id         String   @id @default(uuid())
+  proposal   Proposal @relation(fields: [proposalId], references: [id])
+  proposalId String
+  voter      User     @relation(fields: [voterId], references: [id])
+  voterId    String
+  support    Int // 0 = Against, 1 = For, 2 = Abstain
+  weight     Float // Voting power at time of vote
+  reason     String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@unique([proposalId, voterId], name: "proposal_voter_unique")
+  @@index([proposalId])
+  @@index([voterId])
+  @@index([createdAt])
+}
+
+model RefundClaim {
+  id              String   @id @default(uuid())
+  user            User     @relation(fields: [userId], references: [id])
+  userId          String
+  amount          Float
+  claimedAt       DateTime @default(now())
+  transactionHash String?  @db.VarChar(66) // 0x + 64 hex chars
+
+  @@index([userId])
+  @@index([claimedAt])
+}
+
+model SystemConfig {
+  id             String @id @default(uuid())
+  // Lottery parameters
+  ticketPrice    Float
+  salePeriod     Int // in seconds
+  cooldownPeriod Int // in seconds
+  protocolFee    Float // basis points
+
+  // Loyalty parameters
+  refundThreshold Int
+  refundAmount    Float
+  tierConfig      String // JSON array of tier configurations
+
+  // Governance parameters
+  votingDelay       Int
+  votingPeriod      Int
+  proposalThreshold Float
+  quorumNumerator   Int
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ContractEvent {
+  id              String   @id @default(uuid())
+  eventName       String
+  contractAddress String   @db.VarChar(42)
+  transactionHash String   @db.VarChar(66)
+  blockNumber     Int
+  logIndex        Int
+  data            Json? // Event arguments
+  createdAt       DateTime @default(now())
+
+  @@index([eventName])
+  @@index([contractAddress])
+  @@index([blockNumber])
+  @@index([transactionHash])
+  @@index([createdAt])
+}
+
+model AdminActivity {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String
+  targetId  String?
+  txHash    String?  @db.VarChar(66)
+  metadata  Json? // Additional parameters
+  createdAt DateTime @default(now())
+
+  @@index([action])
+  @@index([txHash])
+  @@index([createdAt])
+  @@index([userId])
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String // e.g., "LOGIN", "TICKET_PURCHASE"
+  ipAddress String?  @db.VarChar(45) // Supports IPv6
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model RateLimit {
+  id       String   @id @default(uuid())
+  key      String   @unique
+  points   Int
+  expireAt DateTime
+
+  @@index([expireAt])
+}
