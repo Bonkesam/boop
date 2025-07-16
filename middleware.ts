@@ -1,3 +1,4 @@
+// middleware.ts
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { getToken } from 'next-auth/jwt'
@@ -18,18 +19,21 @@ const adminRoutes = [
 const publicRoutes = [
   '/',
   '/auth-error',
-  '/unauthorized'
+  '/unauthorized',
+  '/api/auth'
 ]
 
 export async function middleware(req: NextRequest) {
   const path = req.nextUrl.pathname
   
-  // Skip API routes, static files, and public routes
+  // Skip API routes, static files, and specific public routes
   if (
     path.startsWith('/api') ||
     path.startsWith('/_next') ||
     path.startsWith('/favicon') ||
-    publicRoutes.includes(path)
+    path.startsWith('/static') ||
+    publicRoutes.includes(path) ||
+    path.includes('.') // Skip files with extensions
   ) {
     return NextResponse.next()
   }
@@ -38,21 +42,23 @@ export async function middleware(req: NextRequest) {
   const token = await getToken({ 
     req, 
     secret: process.env.AUTH_SECRET,
-    // Add these cookie options to match NextAuth's configuration
     cookieName: process.env.NODE_ENV === 'production' 
       ? '__Secure-next-auth.session-token' 
       : 'next-auth.session-token',
     secureCookie: process.env.NODE_ENV === 'production'
   })
   
+  console.log('Middleware - Path:', path, 'Token:', !!token, 'IsAdmin:', token?.isAdmin)
+  
   // Check if this is a protected route
   const isProtectedRoute = protectedRoutes.some(route => path.startsWith(route))
   
   if (isProtectedRoute) {
-    // If no token, redirect to login
+    // If no token, redirect to home page for authentication
     if (!token) {
+      console.log('No token found, redirecting to home')
       const url = new URL('/', req.url)
-      // Don't add callbackUrl for the root path to avoid loops
+      // Add callbackUrl to remember where they wanted to go
       if (path !== '/') {
         url.searchParams.set('callbackUrl', path)
       }
@@ -62,20 +68,29 @@ export async function middleware(req: NextRequest) {
     // Check admin access for admin routes
     if (adminRoutes.some(route => path.startsWith(route))) {
       if (!token.isAdmin) {
+        console.log('Non-admin user trying to access admin route, redirecting to unauthorized')
         return NextResponse.redirect(new URL('/unauthorized', req.url))
       }
     }
   }
   
+  // REMOVED: Special handling for root path when authenticated
+  // Let the React component handle the authentication flow
+  // This allows users to visit the login page even when authenticated
+  // if (path === '/' && token) {
+  //   if (token.isAdmin) {
+  //     return NextResponse.redirect(new URL('/admin', req.url))
+  //   } else {
+  //     return NextResponse.redirect(new URL('/dashboard', req.url))
+  //   }
+  // }
+  
   return NextResponse.next()
 }
 
-// Updated matcher to include root path
 export const config = {
   matcher: [
-    '/', // Added root path
-    '/dashboard/:path*',
-    '/admin/:path*',
-    '/profile/:path*'
+    // Match all routes except static files and API routes
+    '/((?!api|_next/static|_next/image|favicon.ico|.*\\..*$).*)',
   ]
 }

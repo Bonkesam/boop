@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect } from 'react'
 import { signOut, useSession } from 'next-auth/react'
-import type { Session } from 'next-auth'
 import { useAccount } from 'wagmi'
 type AuthUser = {
   name?: string | null

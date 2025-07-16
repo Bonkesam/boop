@@ -107,6 +107,7 @@ const WalletCard = () => {
           <WalletAuthButton 
             variant="glassmorphism" 
             className="w-full"
+            
           />
         </div>
       </div>
@@ -160,38 +161,74 @@ const LoginPage = () => {
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  // Handle authentication redirects
+  // Enhanced authentication redirects with proper admin handling
   useEffect(() => {
-    if (status === 'loading') return // Still loading
-    if (isRedirecting) return // Already redirecting, prevent multiple redirects
+    // Don't proceed if session is still loading
+    if (status === 'loading') return
+    
+    // Don't proceed if already redirecting to prevent multiple redirects
+    if (isRedirecting) return
 
+    // Only proceed if user is authenticated
     if (session?.user) {
+      console.log('User authenticated, processing redirect...', {
+        address: session.user.address,
+        isAdmin: session.user.isAdmin,
+        currentPath: window.location.pathname
+      })
+
       setIsRedirecting(true)
       
       // Get the callback URL from search params
       const callbackUrl = searchParams.get('callbackUrl')
       
-      // Determine redirect URL
-      let redirectUrl = '/'
+      // Determine redirect URL based on user role
+      let redirectUrl: string
       
-      if (callbackUrl && callbackUrl !== '/' && callbackUrl !== window.location.pathname) {
-        // If there's a specific callback URL and it's not the current page, use it
-        redirectUrl = callbackUrl
+      if (session.user.isAdmin) {
+        // Admin users (deployer address) go to admin page
+        redirectUrl = '/admin'
+        console.log('Admin user detected, redirecting to admin page')
       } else {
-        // Otherwise, redirect based on user role
-        redirectUrl = session.user.isAdmin ? '/admin' : '/dashboard'
+        // Regular users go to dashboard
+        redirectUrl = '/dashboard'
+        console.log('Regular user detected, redirecting to dashboard')
       }
+      
+      // Override with callback URL if it exists and is valid
+      if (callbackUrl && 
+          callbackUrl !== '/' && 
+          callbackUrl !== window.location.pathname &&
+          callbackUrl !== '/login' &&
+          callbackUrl !== '/auth/signin') {
+        
+        console.log('Using callback URL:', callbackUrl)
+        redirectUrl = callbackUrl
+      }
+      
+      console.log('Final redirect URL:', redirectUrl)
       
       // Only redirect if we're not already on the target page
       if (window.location.pathname !== redirectUrl) {
-        // Use replace instead of push to prevent back button issues
-        router.replace(redirectUrl)
+        console.log('Redirecting from', window.location.pathname, 'to', redirectUrl)
+        
+        // Small delay to ensure smooth transition
+        setTimeout(() => {
+          router.replace(redirectUrl)
+        }, 100)
       } else {
-        // If we're already on the target page, just stop the redirect loop
+        console.log('Already on target page, stopping redirect')
         setIsRedirecting(false)
       }
     }
   }, [session, status, router, searchParams, isRedirecting])
+
+  // Reset redirect state when session changes
+  useEffect(() => {
+    if (status !== 'loading' && !session?.user) {
+      setIsRedirecting(false)
+    }
+  }, [session, status])
 
   useEffect(() => {
     if (pageRef.current) {
@@ -243,7 +280,14 @@ const LoginPage = () => {
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-4"></div>
-          <p>{session?.user ? "Redirecting to your dashboard..." : "Loading..."}</p>
+          <p>
+            {status === 'loading' 
+              ? "Loading..." 
+              : session?.user?.isAdmin 
+                ? "Redirecting to admin dashboard..." 
+                : "Redirecting to your dashboard..."
+            }
+          </p>
         </div>
       </div>
     )

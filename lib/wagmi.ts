@@ -6,33 +6,47 @@ import { injected, metaMask, walletConnect, coinbaseWallet } from 'wagmi/connect
 // Get WalletConnect project ID from environment
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || ''
 
-export const config = createConfig({
-  chains: [mainnet, sepolia, polygon, arbitrum, optimism],
-  connectors: [
+// Create connectors with SSR safety
+const getConnectors = () => {
+  const baseConnectors = [
     injected({
       shimDisconnect: true,
     }),
     metaMask({
       dappMetadata: {
         name: 'beep',
-        url: 'https://dfortune.com',
-        iconUrl: 'https://dfortune.com/icon.png',
-      },
-    }),
-    walletConnect({
-      projectId,
-      metadata: {
-        name: 'beep',
         description: 'Decentralized Fortune Platform',
-        url: 'https://dfortune.com',
-        icons: ['https://dfortune.com/icon.png'],
+        url: typeof window !== 'undefined' ? window.location.origin : 'https://dfortune.com',
+        iconUrl: 'https://dfortune.com/icon.png',
       },
     }),
     coinbaseWallet({
       appName: 'beep',
       appLogoUrl: 'https://dfortune.com/icon.png',
     }),
-  ],
+  ]
+
+  // Only add WalletConnect on client side to avoid indexedDB issues
+  if (typeof window !== 'undefined' && projectId) {
+    baseConnectors.push(
+      walletConnect({
+        projectId,
+        metadata: {
+          name: 'beep',
+          description: 'Decentralized Fortune Platform',
+          url: window.location.origin,
+          icons: ['https://dfortune.com/icon.png'],
+        },
+      })
+    )
+  }
+
+  return baseConnectors
+}
+
+export const config = createConfig({
+  chains: [mainnet, sepolia, polygon, arbitrum, optimism],
+  connectors: getConnectors(),
   transports: {
     [mainnet.id]: http(),
     [sepolia.id]: http(),

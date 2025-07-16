@@ -1,31 +1,42 @@
 // components/auth/WalletButton.tsx
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useAccount, useConnect, useDisconnect, useSignMessage } from 'wagmi'
-import { signIn, useSession } from 'next-auth/react'
+import { signIn, signOut, useSession } from 'next-auth/react'
 import { toast } from 'react-hot-toast'
+import { useRouter } from 'next/navigation'
 import { Loader2, Wallet, LogOut, ChevronDown, CheckCircle, AlertCircle, Shield } from 'lucide-react'
 
 interface WalletAuthButtonProps {
   className?: string
   variant?: 'default' | 'glassmorphism'
+  onAuthSuccess?: (user: any) => void
+  autoRedirect?: boolean
 }
 
 const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({ 
   className = '', 
-  variant = 'default' 
+  variant = 'default',
+  onAuthSuccess,
+  autoRedirect = true // Changed default to true
 }) => {
   const { data: session, status } = useSession()
   const { address, isConnected, connector } = useAccount()
   const { connect, connectors, isPending: isConnecting } = useConnect()
   const { disconnect } = useDisconnect()
   const { signMessageAsync } = useSignMessage()
+  const router = useRouter()
 
   const [isAuthenticating, setIsAuthenticating] = useState(false)
   const [showConnectors, setShowConnectors] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [authStep, setAuthStep] = useState(0)
+  
+  // Track authentication attempts per address
+  const attemptedAddresses = useRef<Set<string>>(new Set())
+  const lastAuthenticatedAddress = useRef<string | null>(null)
+  const authInProgress = useRef(false)
 
   const authSteps = [
     'Connect Wallet',
@@ -36,20 +47,37 @@ const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({
     'Welcome!',
   ]
 
-  // Auto-logout when wallet disconnects
+  // Handle wallet disconnection
   useEffect(() => {
-    if (!isConnected && session) {
+    if (!isConnected && session?.user?.address && lastAuthenticatedAddress.current === session.user.address) {
+      console.log('Wallet disconnected for authenticated address, signing out...')
       signOut({ redirect: false })
       toast.error('Wallet disconnected')
+      // Reset authentication state
+      attemptedAddresses.current.clear()
+      lastAuthenticatedAddress.current = null
+      authInProgress.current = false
+      // Always redirect to home on disconnect
+      router.push('/')
     }
-  }, [isConnected, session])
+  }, [isConnected, session?.user?.address, router])
 
-  // Auto-authenticate when wallet connects
+  // Handle address changes
   useEffect(() => {
-    if (isConnected && address && !session && !isAuthenticating) {
-      handleAuthentication()
+    if (address) {
+      setError(null)
+      setAuthStep(0)
+      authInProgress.current = false
+      
+      // If we have a session but it's for a different address, sign out
+      if (session?.user?.address && session.user.address !== address) {
+        console.log('Address changed, signing out previous session')
+        signOut({ redirect: false })
+        lastAuthenticatedAddress.current = null
+        router.push('/')
+      }
     }
-  }, [isConnected, address, session, isAuthenticating])
+  }, [address, session?.user?.address, router])
 
   const getNonce = async (walletAddress: string): Promise<string> => {
     try {
@@ -77,6 +105,22 @@ const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({
       return
     }
 
+    // Check if already authenticated for this address
+    if (session?.user?.address === address) {
+      console.log('Already authenticated for this address')
+      return
+    }
+
+    // Prevent multiple authentication attempts
+    if (authInProgress.current) {
+      console.log('Authentication already in progress')
+      return
+    }
+
+    console.log('Starting authentication for address:', address)
+    
+    authInProgress.current = true
+    attemptedAddresses.current.add(address)
     setIsAuthenticating(true)
     setError(null)
 
@@ -106,8 +150,8 @@ const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({
         await new Promise(resolve => setTimeout(resolve, 600))
       }
       
-      // Authenticate with NextAuth
-      const result = await signIn('credentials', {
+      // Use the correct provider ID 'wallet'
+      const result = await signIn('wallet', {
         address,
         signature,
         nonce,
@@ -118,27 +162,46 @@ const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({
         throw new Error(result.error)
       }
 
-      if (variant === 'glassmorphism') {
-        setAuthStep(5)
-        await new Promise(resolve => setTimeout(resolve, 600))
+      if (result?.ok) {
+        console.log('NextAuth signIn successful')
+        
+        if (variant === 'glassmorphism') {
+          setAuthStep(5)
+          await new Promise(resolve => setTimeout(resolve, 600))
+        }
+
+        console.log('Authentication successful for address:', address)
+        toast.success('Successfully authenticated!')
+        
+        // Mark this address as successfully authenticated
+        lastAuthenticatedAddress.current = address
+        
+        // Call onAuthSuccess callback if provided
+        if (onAuthSuccess) {
+          onAuthSuccess({ address, isAdmin: result.user?.isAdmin })
+        }
+        
+        // The parent component (page.tsx) will handle the redirect
+        // based on the session state change
       }
 
-      toast.success('Successfully authenticated!');
-      
-      // REMOVED REDIRECT LOGIC - Let LoginPage handle it
-
     } catch (error) {
+      console.error('Authentication failed:', error)
       const errorMessage = error instanceof Error ? error.message : 'Authentication failed'
       setError(errorMessage)
       toast.error(errorMessage)
+      
+      // Remove from attempted addresses so user can try again
+      attemptedAddresses.current.delete(address)
       
       // Disconnect wallet on auth failure
       disconnect()
       setAuthStep(0)
     } finally {
       setIsAuthenticating(false)
+      authInProgress.current = false
     }
-  }, [address, variant, signMessageAsync, disconnect])
+  }, [address, variant, signMessageAsync, disconnect, session?.user?.address, onAuthSuccess])
 
   const handleConnect = useCallback(async (connectorToUse: any) => {
     try {
@@ -154,16 +217,21 @@ const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({
 
   const handleDisconnect = useCallback(async () => {
     try {
+      console.log('Manually disconnecting wallet')
       disconnect()
       if (session) {
         await signOut({ redirect: false })
       }
       setAuthStep(0)
+      attemptedAddresses.current.clear()
+      lastAuthenticatedAddress.current = null
+      authInProgress.current = false
       toast.success('Wallet disconnected')
+      router.push('/')
     } catch (error) {
       toast.error('Failed to disconnect wallet')
     }
-  }, [disconnect, session])
+  }, [disconnect, session, router])
 
   const handleConnectClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -213,8 +281,8 @@ const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({
     )
   }
 
-  // Already authenticated
-  if (session && isConnected) {
+  // Authenticated state - show connected wallet info
+  if (session && isConnected && session.user.address === address) {
     return (
       <div className={`flex items-center space-x-3 ${className}`}>
         <div className="hidden sm:block">
@@ -234,6 +302,25 @@ const WalletAuthButton: React.FC<WalletAuthButtonProps> = ({
             )}
           </div>
         </div>
+        
+        {/* Add navigation buttons for authenticated users */}
+        <div className="flex items-center space-x-2">
+          {session.user.isAdmin && (
+            <button
+              onClick={() => router.push('/admin')}
+              className="px-3 py-1 text-sm bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
+            >
+              Admin
+            </button>
+          )}
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+          >
+            Dashboard
+          </button>
+        </div>
+        
         <button
           onClick={handleDisconnect}
           className={styles.disconnectButton}
